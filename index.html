@@ -1,0 +1,378 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Mothlight: a one-button party game</title>
+<meta name="description" content="A one-button party arcade game for 1-4 players on one keyboard or one phone. Moths circle on their own; hold to fly straight. Eat light, grow your trail, don't touch any trail, even your own.">
+<meta property="og:title" content="Mothlight: a one-button party game">
+<meta property="og:description" content="1-4 players, one button each. Hold to fly straight, let go to circle. Last moth glowing wins.">
+<meta property="og:image" content="https://arnavjhajharia.github.io/mothlight/thumb.png">
+<style>
+  html,body{margin:0;height:100%;background:#07061a;overflow:hidden;touch-action:none;user-select:none;-webkit-user-select:none;font-family:ui-rounded,"SF Pro Rounded",system-ui,sans-serif;color:#f5ecd6}
+  canvas{position:absolute;left:0;top:0;width:100%;height:100%;display:block}
+  #ui{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none}
+  .panel{pointer-events:auto;text-align:center;background:rgba(10,8,30,.72);border:1px solid rgba(255,220,150,.25);border-radius:22px;padding:26px 34px;max-width:min(760px,92vw);backdrop-filter:blur(6px)}
+  h1{margin:0 0 4px;font-size:clamp(40px,7vw,78px);letter-spacing:.06em;font-weight:800;background:linear-gradient(180deg,#fff3c8,#ffb347);-webkit-background-clip:text;background-clip:text;color:transparent;text-shadow:0 0 40px rgba(255,180,70,.35)}
+  .sub{opacity:.85;margin:0 0 18px;font-size:clamp(14px,2vw,18px)}
+  .slots{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:14px 0 18px}
+  .slot{border-radius:14px;padding:12px 6px;border:2px solid rgba(255,255,255,.12);font-size:14px;line-height:1.5}
+  .slot b{font-size:22px;display:block}
+  .slot.on{border-color:currentColor;box-shadow:0 0 18px currentColor inset}
+  .btns{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+  button{font:inherit;font-weight:700;font-size:17px;border:0;border-radius:999px;padding:12px 22px;cursor:pointer;background:#ffcf6e;color:#1a1030}
+  button.ghost{background:transparent;color:#f5ecd6;border:1px solid rgba(255,255,255,.35)}
+  .hint{font-size:13px;opacity:.7;margin-top:14px;line-height:1.5}
+  .hidden{display:none}
+  kbd{display:inline-block;min-width:1.4em;padding:1px 6px;border-radius:6px;background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.25);font-family:inherit;font-weight:700}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui">
+  <div class="panel" id="lobby">
+    <h1>MOTHLIGHT</h1>
+    <p class="sub">One button each. <b>Hold</b> to fly straight. <b>Let go</b> to circle.<br>Eat light to grow. Touch any trail (even your own) and you're out.</p>
+    <div class="slots" id="slots"></div>
+    <div class="btns">
+      <button id="bSolo">Play solo vs 3 moths</button>
+      <button id="bParty" class="ghost">Start party</button>
+    </div>
+    <p class="hint">Party: each player presses their key to join. Empty seats become computer moths.<br>
+      On a phone or tablet, each player holds their own corner of the screen. First to 3 rounds wins. Sound on 🔊</p>
+  </div>
+  <div class="panel hidden" id="over"><h1 id="overT">—</h1><p class="sub" id="overS"></p>
+    <div class="btns"><button id="bAgain">Play again</button><button id="bMenu" class="ghost">Menu</button></div></div>
+</div>
+<script>
+'use strict';
+// ---------------- constants ----------------
+const W = 1280, H = 720, MARGIN = 26;
+const KEYS = ['KeyA', 'KeyL', 'KeyV', 'ArrowUp'];
+const KEYLBL = ['A', 'L', 'V', '↑'];
+const COLORS = ['#ffb347', '#59e1ff', '#ff6fd8', '#a8ff60'];
+const NAMES = ['Amber', 'Azure', 'Rose', 'Lime'];
+const SPEED = 205, BOOST = 255, TURN = 3.1, STEP = 6, HEAD_R = 7, START_LEN = 55, GROW = 14, WIN_ROUNDS = 3;
+const SHRINK_AT = 18, SHRINK_RATE = 9, MAX_INSET = 250;
+// ---------------- seeded rng ----------------
+let seed = 1; const rnd = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
+// ---------------- state ----------------
+const cv = document.getElementById('c'), cx = cv.getContext('2d');
+let joined = [false, false, false, false], humans = [false, false, false, false];
+let moths = [], motes = [], parts = [], rings = [], wins = [0, 0, 0, 0];
+let phase = 'lobby', tPhase = 0, tRound = 0, inset = 0, shake = 0, roundMsg = '', held = [false, false, false, false], touchHeld = new Map();
+let demo = location.hash.startsWith('#demo'), selftest = location.hash === '#selftest', quiet = false;
+let WIN = demo ? 3 : WIN_ROUNDS, roundsPlayed = 0;
+
+function newMoth(i) {
+  const a = i * Math.PI / 2 + Math.PI / 4, r = 230;
+  const x = W / 2 + Math.cos(a) * r * 1.6, y = H / 2 + Math.sin(a) * r * .9;
+  return { i, x, y, h: Math.atan2(H / 2 - y, W / 2 - x) - Math.PI / 2 + .3, alive: true, len: START_LEN, trail: [{ x, y }], dist: 0, eaten: 0, bot: !humans[i], think: 0, hold: false, deathT: 0 };
+}
+function spawnMote() {
+  for (let k = 0; k < 40; k++) {
+    const x = MARGIN + inset + 40 + rnd() * (W - 2 * (MARGIN + inset) - 80), y = MARGIN + inset * .56 + 40 + rnd() * (H - 2 * (MARGIN + inset * .56) - 80);
+    if (!nearTrail(x, y, 30, -1, 0)) { motes.push({ x, y, t: 0 }); return; }
+  }
+}
+function startRound() {
+  moths = [0, 1, 2, 3].map(newMoth); motes = []; parts = []; rings = []; inset = 0; tRound = 0;
+  for (let k = 0; k < 4; k++) spawnMote();
+  phase = 'count'; tPhase = 0; if (!selftest && !quiet) sfx.count();
+}
+function startMatch() { wins = [0, 0, 0, 0]; roundsPlayed = 0; hideAll(); startRound(); }
+
+// ---------------- geometry ----------------
+function segDist2(px, py, a, b) {
+  const dx = b.x - a.x, dy = b.y - a.y, l = dx * dx + dy * dy; let t = l ? ((px - a.x) * dx + (py - a.y) * dy) / l : 0;
+  t = t < 0 ? 0 : t > 1 ? 1 : t; const ex = a.x + t * dx - px, ey = a.y + t * dy - py; return ex * ex + ey * ey;
+}
+// is (x,y) within r of any trail? skip = moth index whose newest `skipN` points are ignored (its own neck)
+function nearTrail(x, y, r, skip, skipN) { return whoTrail(x, y, r, skip, skipN) >= 0; }
+function whoTrail(x, y, r, skip, skipN) {
+  const r2 = r * r;
+  for (const m of moths) {
+    if (!m.alive && m.deathT > .05) continue;
+    const tr = m.trail, n = tr.length - (m.i === skip ? skipN : 0);
+    for (let k = 1; k < n; k++) if (segDist2(x, y, tr[k - 1], tr[k]) < r2) return m.i;
+  }
+  return -1;
+}
+function bounds() { return { x0: MARGIN + inset, x1: W - MARGIN - inset, y0: MARGIN + inset * .56, y1: H - MARGIN - inset * .56 }; }
+
+// ---------------- bot brain ----------------
+function danger(m, hold, secs) {
+  let x = m.x, y = m.y, h = m.h; const b = bounds(), dt = 1 / 30;
+  for (let t = 0; t < secs; t += dt) {
+    if (!hold) h += TURN * dt;
+    const v = hold ? BOOST : SPEED; x += Math.cos(h) * v * dt; y += Math.sin(h) * v * dt;
+    if (x < b.x0 + 8 || x > b.x1 - 8 || y < b.y0 + 8 || y > b.y1 - 8) return 1 - t / secs * .5;
+    if (nearTrail(x, y, HEAD_R + 7, m.i, 12)) return 1 - t / secs * .5;
+    for (const o of moths) if (o !== m && o.alive && Math.hypot(o.x + Math.cos(o.h) * SPEED * t - x, o.y + Math.sin(o.h) * SPEED * t - y) < 30) return 1 - t / secs * .5;
+  }
+  return 0;
+}
+function botThink(m, dt) {
+  m.think -= dt; if (m.think > 0) return;
+  m.think = .07 + rnd() * .06;
+  let best = null, bd = 1e9;
+  for (const o of motes) { const d = Math.hypot(o.x - m.x, o.y - m.y); if (d < bd) { bd = d; best = o; } }
+  const dS = danger(m, true, 1), dC = danger(m, false, 1);
+  let want = false;
+  if (best) { let da = Math.atan2(best.y - m.y, best.x - m.x) - m.h; da = Math.atan2(Math.sin(da), Math.cos(da)); want = Math.abs(da) < .35 || (da < 0 && Math.abs(da) < 2.4); }
+  if (dS && !dC) want = false; else if (dC && !dS) want = true; else if (dS && dC) want = dS < dC;
+  if (!dS && !dC && rnd() < .04) want = !want; // human-ish wobble, only when it is safe
+  m.hold = want;
+}
+
+// ---------------- simulation ----------------
+function kill(m, why) {
+  if (!m.alive) return; m.alive = false; m.dt = tRound; m.deathT = 0; shake = Math.max(shake, 10);
+  for (let k = 0; k < 34; k++) { const a = rnd() * 6.283, s = 60 + rnd() * 260; parts.push({ x: m.x, y: m.y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: .6 + rnd() * .7, c: m.i }); }
+  if (!selftest && !quiet) sfx.pop(m.i);
+}
+function update(dt) {
+  tPhase += dt;
+  if (phase === 'count') { if (tPhase >= 2.2) { phase = 'play'; tPhase = 0; if (!selftest && !quiet) sfx.go(); } return; }
+  if (phase === 'roundEnd') { if (tPhase > (selftest ? 0 : 2.4)) { roundsPlayed++; if (wins.some(w => w >= WIN) || (demo && roundsPlayed >= 5)) endMatch(); else startRound(); } stepFx(dt); return; }
+  if (phase !== 'play') { stepFx(dt); return; }
+  tRound += dt;
+  if (tRound > SHRINK_AT) inset = Math.min(MAX_INSET, inset + SHRINK_RATE * dt);
+  if (tRound > 40) for (const m of moths) m.len += 25 * dt; // overtime: every trail keeps growing until someone gives
+  const b = bounds();
+  for (const m of moths) {
+    if (!m.alive) { m.deathT += dt; continue; }
+    if (m.bot) botThink(m, dt); else m.hold = held[m.i];
+    if (!m.hold) m.h += TURN * dt;
+    const v = m.hold ? BOOST : SPEED;
+    m.x += Math.cos(m.h) * v * dt; m.y += Math.sin(m.h) * v * dt;
+    // walls bounce (reflect), but the closing wall itself is gentle: it only pushes you inside
+    // walls: slide along them (turn to the wall direction nearest your heading); a bounce would fling you into your own trail
+    if (m.x < b.x0 || m.x > b.x1) { m.x = Math.max(b.x0, Math.min(b.x1, m.x)); m.h = Math.sin(m.h) >= 0 ? Math.PI / 2 : -Math.PI / 2; }
+    if (m.y < b.y0 || m.y > b.y1) { m.y = Math.max(b.y0, Math.min(b.y1, m.y)); m.h = Math.cos(m.h) >= 0 ? 0 : Math.PI; }
+    const last = m.trail[m.trail.length - 1];
+    if (Math.hypot(m.x - last.x, m.y - last.y) >= STEP) { m.trail.push({ x: m.x, y: m.y }); while (m.trail.length > m.len) m.trail.shift(); }
+  }
+  // collisions after everyone moved (simultaneous deaths are fair)
+  const dead = [];
+  for (const m of moths) if (m.alive) { const w = whoTrail(m.x, m.y, HEAD_R, m.i, 12); if (w >= 0) { m.cause = w === m.i ? 'self' : 'other'; dead.push(m); } }
+  for (let a = 0; a < 4; a++) for (let c = a + 1; c < 4; c++) { const p = moths[a], q = moths[c]; if (p.alive && q.alive && Math.hypot(p.x - q.x, p.y - q.y) < HEAD_R * 2) { p.cause = q.cause = 'head'; dead.push(p, q); } }
+  for (const m of dead) kill(m);
+  // motes
+  for (let k = motes.length - 1; k >= 0; k--) {
+    const o = motes[k]; o.t += dt;
+    if (o.x < b.x0 || o.x > b.x1 || o.y < b.y0 || o.y > b.y1) { motes.splice(k, 1); spawnMote(); continue; }
+    for (const m of moths) if (m.alive && Math.hypot(m.x - o.x, m.y - o.y) < 20) {
+      m.len += GROW; m.eaten++; motes.splice(k, 1); spawnMote(); rings.push({ x: o.x, y: o.y, t: 0, c: m.i }); if (!selftest && !quiet) sfx.eat(m.i, m.eaten); break;
+    }
+  }
+  stepFx(dt);
+  const alive = moths.filter(m => m.alive);
+  if (alive.length <= 1) {
+    phase = 'roundEnd'; tPhase = 0;
+    if (alive.length === 1) { wins[alive[0].i]++; roundMsg = NAMES[alive[0].i] + ' takes the round'; if (!selftest && !quiet) sfx.win(); }
+    else { roundMsg = 'Everyone burned out. No point.'; }
+  }
+}
+function stepFx(dt) {
+  for (const p of parts) { p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= .96; p.vy *= .96; p.life -= dt; }
+  parts = parts.filter(p => p.life > 0);
+  for (const r of rings) r.t += dt; rings = rings.filter(r => r.t < .6);
+  shake *= Math.pow(.02, dt);
+}
+function endMatch() {
+  phase = 'over'; let wi = wins.indexOf(Math.max(...wins));
+  if (demo) { demoNext(); return; }
+  if (selftest) return;
+  document.getElementById('overT').textContent = NAMES[wi] + ' wins';
+  document.getElementById('overT').style.background = 'none'; document.getElementById('overT').style.color = COLORS[wi];
+  document.getElementById('overS').textContent = (humans[wi] ? 'A human moth! ' : 'A computer moth. ') + 'Final: ' + wins.map((w, i) => NAMES[i] + ' ' + w).join(' · ');
+  show('over'); sfx.fanfare();
+}
+
+// ---------------- rendering ----------------
+const sprites = COLORS.map(c => { const s = document.createElement('canvas'); s.width = s.height = 64; const g = s.getContext('2d');
+  const gr = g.createRadialGradient(32, 32, 0, 32, 32, 32); gr.addColorStop(0, '#fff'); gr.addColorStop(.18, c); gr.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, 64, 64); return s; });
+const moteSprite = (() => { const s = document.createElement('canvas'); s.width = s.height = 64; const g = s.getContext('2d');
+  const gr = g.createRadialGradient(32, 32, 0, 32, 32, 32); gr.addColorStop(0, '#fffbe8'); gr.addColorStop(.25, 'rgba(255,230,160,.9)'); gr.addColorStop(1, 'rgba(255,200,100,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, 64, 64); return s; })();
+const stars = Array.from({ length: 140 }, () => ({ x: Math.random() * W, y: Math.random() * H, r: Math.random() * 1.4 + .2, p: Math.random() * 6 }));
+let scale = 1, ox = 0, oy = 0, now = 0;
+function resize() {
+  const d = Math.min(devicePixelRatio || 1, 2); cv.width = innerWidth * d; cv.height = innerHeight * d;
+  scale = Math.min(cv.width / W, cv.height / H); ox = (cv.width - W * scale) / 2; oy = (cv.height - H * scale) / 2;
+}
+addEventListener('resize', resize); resize();
+function draw() {
+  cx.setTransform(1, 0, 0, 1, 0, 0); cx.fillStyle = '#07061a'; cx.fillRect(0, 0, cv.width, cv.height);
+  const sx = (Math.random() - .5) * shake, sy = (Math.random() - .5) * shake;
+  cx.setTransform(scale, 0, 0, scale, ox + sx * scale, oy + sy * scale);
+  const bg = cx.createRadialGradient(W / 2, H / 2, 50, W / 2, H / 2, 760); bg.addColorStop(0, '#1b1446'); bg.addColorStop(1, '#07061a');
+  cx.fillStyle = bg; cx.fillRect(0, 0, W, H);
+  for (const s of stars) { cx.globalAlpha = .35 + .35 * Math.sin(now * 1.3 + s.p); cx.fillStyle = '#cfd6ff'; cx.fillRect(s.x, s.y, s.r, s.r); }
+  cx.globalAlpha = 1;
+  const b = bounds();
+  // dark outside the closing arena
+  cx.fillStyle = 'rgba(3,2,10,.72)';
+  cx.fillRect(0, 0, W, b.y0); cx.fillRect(0, b.y1, W, H - b.y1); cx.fillRect(0, b.y0, b.x0, b.y1 - b.y0); cx.fillRect(b.x1, b.y0, W - b.x1, b.y1 - b.y0);
+  cx.strokeStyle = inset > 0 ? 'rgba(255,120,90,' + (.35 + .25 * Math.sin(now * 6)) + ')' : 'rgba(255,220,160,.22)'; cx.lineWidth = 2;
+  cx.strokeRect(b.x0, b.y0, b.x1 - b.x0, b.y1 - b.y0);
+  cx.globalCompositeOperation = 'lighter';
+  for (const o of motes) { const s = 34 + 6 * Math.sin(now * 5 + o.x); cx.drawImage(moteSprite, o.x - s / 2, o.y - s / 2, s, s); }
+  for (const m of moths) {
+    const tr = m.trail; if (tr.length < 2) continue;
+    const fade = m.alive ? 1 : Math.max(0, 1 - m.deathT * 2.2); if (fade <= 0) continue;
+    cx.strokeStyle = COLORS[m.i]; cx.lineCap = 'round'; cx.lineJoin = 'round';
+    cx.globalAlpha = .18 * fade; cx.lineWidth = 14; path(tr); cx.stroke();
+    cx.globalAlpha = .95 * fade; cx.lineWidth = 4; path(tr); cx.stroke();
+  }
+  for (const r of rings) { cx.globalAlpha = 1 - r.t / .6; cx.strokeStyle = COLORS[r.c]; cx.lineWidth = 3; cx.beginPath(); cx.arc(r.x, r.y, 10 + r.t * 90, 0, 6.283); cx.stroke(); }
+  for (const p of parts) { cx.globalAlpha = Math.min(1, p.life * 1.5); cx.drawImage(sprites[p.c], p.x - 9, p.y - 9, 18, 18); }
+  cx.globalAlpha = 1;
+  for (const m of moths) if (m.alive) {
+    const s = 46 + (m.hold ? 10 : 0); cx.drawImage(sprites[m.i], m.x - s / 2, m.y - s / 2, s, s);
+  }
+  cx.globalCompositeOperation = 'source-over';
+  for (const m of moths) if (m.alive) drawMoth(m);
+  // HUD
+  if (phase !== 'lobby') {
+    cx.font = '700 20px ui-rounded,system-ui,sans-serif'; cx.textAlign = 'center';
+    for (let i = 0; i < 4; i++) {
+      const x = W / 2 + (i - 1.5) * 170;
+      cx.fillStyle = COLORS[i]; cx.globalAlpha = moths[i] && moths[i].alive ? 1 : .4;
+      cx.fillText((humans[i] ? KEYLBL[i] + ' ' : '🤖 ') + NAMES[i] + '  ' + '●'.repeat(wins[i]) + '○'.repeat(Math.max(0, WIN - wins[i])), x, 22);
+    }
+    cx.globalAlpha = 1;
+  }
+  if (phase === 'count') { bigText(tPhase < .7 ? '3' : tPhase < 1.4 ? '2' : '1', '#fff3c8'); hintKeys(); }
+  if (phase === 'play' && tPhase < .6) bigText('GLOW!', '#ffcf6e', 1 - tPhase / .6);
+  if (phase === 'play' && tRound > SHRINK_AT - 3 && tRound < SHRINK_AT + 1.5) smallText('the dark is closing in', H - 40);
+  if (phase === 'play' && tRound > 40 && tRound < 43) smallText('overtime: every trail is growing', H - 40);
+  if (phase === 'roundEnd') bigText(roundMsg, '#fff3c8', 1, 54);
+}
+function path(tr) { cx.beginPath(); cx.moveTo(tr[0].x, tr[0].y); for (let k = 1; k < tr.length; k++) cx.lineTo(tr[k].x, tr[k].y); }
+function drawMoth(m) {
+  cx.save(); cx.translate(m.x, m.y); cx.rotate(m.h);
+  const flap = Math.sin(now * (m.hold ? 34 : 22) + m.i) * .5 + .5;
+  cx.fillStyle = 'rgba(255,248,230,.92)';
+  for (const sgn of [-1, 1]) { cx.beginPath(); cx.ellipse(-2, sgn * (5 + flap * 2), 9, 4 + flap * 3, sgn * (.5 + flap * .4), 0, 6.283); cx.fill(); }
+  cx.fillStyle = COLORS[m.i]; cx.beginPath(); cx.ellipse(0, 0, 7, 3, 0, 0, 6.283); cx.fill();
+  cx.restore();
+}
+function bigText(t, c, a = 1, size = 110) { cx.globalAlpha = a; cx.font = '800 ' + size + 'px ui-rounded,system-ui,sans-serif'; cx.textAlign = 'center'; cx.textBaseline = 'middle';
+  cx.fillStyle = 'rgba(0,0,0,.35)'; cx.fillText(t, W / 2 + 3, H / 2 + 4); cx.fillStyle = c; cx.fillText(t, W / 2, H / 2); cx.globalAlpha = 1; cx.textBaseline = 'alphabetic'; }
+function smallText(t, y) { cx.font = '600 22px ui-rounded,system-ui,sans-serif'; cx.textAlign = 'center'; cx.fillStyle = 'rgba(255,160,120,.9)'; cx.fillText(t, W / 2, y); }
+function hintKeys() { cx.font = '600 20px ui-rounded,system-ui,sans-serif'; cx.textAlign = 'center';
+  for (const m of moths) { cx.fillStyle = COLORS[m.i]; cx.fillText(m.bot ? 'computer' : 'hold ' + (touchMode ? 'your corner' : KEYLBL[m.i]), m.x, m.y - 26); } }
+
+// ---------------- audio ----------------
+let ac = null, bus = null;
+const PENTA = [0, 2, 4, 7, 9, 12, 14, 16, 19, 21, 24];
+function ctxA() { if (ac) return; ac = new (window.AudioContext || window.webkitAudioContext)(); bus = ac.createGain(); bus.gain.value = .7;
+  const comp = ac.createDynamicsCompressor(); bus.connect(comp); comp.connect(ac.destination); startMusic(); }
+function tone(f, d, type = 'sine', g = .2, when = 0, slide = 0) { if (!ac) return; const t = ac.currentTime + when, o = ac.createOscillator(), e = ac.createGain();
+  o.type = type; o.frequency.setValueAtTime(f, t); if (slide) o.frequency.exponentialRampToValueAtTime(f * slide, t + d);
+  e.gain.setValueAtTime(0, t); e.gain.linearRampToValueAtTime(g, t + .008); e.gain.exponentialRampToValueAtTime(.0008, t + d); o.connect(e); e.connect(bus); o.start(t); o.stop(t + d + .05); }
+function noise(d, g, f = 1200, when = 0) { if (!ac) return; const t = ac.currentTime + when, n = ac.sampleRate * d, buf = ac.createBuffer(1, n, ac.sampleRate), da = buf.getChannelData(0);
+  for (let k = 0; k < n; k++) da[k] = Math.random() * 2 - 1; const s = ac.createBufferSource(); s.buffer = buf; const fl = ac.createBiquadFilter(); fl.type = 'bandpass'; fl.frequency.value = f;
+  const e = ac.createGain(); e.gain.setValueAtTime(g, t); e.gain.exponentialRampToValueAtTime(.0008, t + d); s.connect(fl); fl.connect(e); e.connect(bus); s.start(t); }
+const ROOT = [220, 246.94, 196, 261.63];
+const sfx = {
+  eat(i, n) { const f = ROOT[i] * Math.pow(2, PENTA[Math.min(n, PENTA.length - 1)] / 12); tone(f, .22, 'triangle', .22); tone(f * 2, .12, 'sine', .08, .03); },
+  pop(i) { noise(.45, .5, 700); tone(ROOT[i], .5, 'sawtooth', .12, 0, .25); tone(55, .35, 'sine', .5, 0, .5); },
+  count() { [0, .7, 1.4].forEach(w => tone(523.25, .12, 'square', .07, w)); tone(1046.5, .3, 'square', .08, 2.15); },
+  go() { },
+  win() { [0, 4, 7, 12].forEach((s, k) => tone(392 * Math.pow(2, s / 12), .5, 'triangle', .14, k * .09)); },
+  fanfare() { [0, 4, 7, 12, 16, 19, 24].forEach((s, k) => tone(261.63 * Math.pow(2, s / 12), .9, 'triangle', .13, k * .1)); },
+};
+// soft night groove; gets busier as the dark closes in
+let beat = 0, nextBeat = 0;
+function startMusic() { nextBeat = ac.currentTime + .1; setInterval(sched, 50); }
+function sched() {
+  const spb = 60 / 104 / 2;
+  while (nextBeat < ac.currentTime + .15) {
+    const w = nextBeat - ac.currentTime, step = beat % 16, intense = phase === 'play' ? Math.min(1, tRound / SHRINK_AT) : .2;
+    if (step % 4 === 0) tone(58, .3, 'sine', .32, w, .5);
+    if (intense > .5 && step % 2 === 1) noise(.05, .06 * intense, 7000, w);
+    const bassline = [0, 0, 7, 0, 3, 3, 10, 7];
+    if (step % 2 === 0) tone(55 * Math.pow(2, bassline[(step / 2) | 0] / 12), .26, 'triangle', .1, w);
+    if (step === 0 || step === 6 || step === 12) tone(440 * Math.pow(2, [0, 3, 7, 10][(beat >> 4) % 4] / 12), .9, 'sine', .035 + .03 * intense, w);
+    beat++; nextBeat += spb;
+  }
+}
+
+// ---------------- input ----------------
+let touchMode = false;
+function setHeld(i, v) { held[i] = v; if (phase === 'lobby' && v && !humans[i]) { humans[i] = joined[i] = true; renderSlots(); tone(ROOT[i] * 2, .2, 'triangle', .2); } }
+addEventListener('keydown', e => {
+  ctxA(); if (e.repeat) return;
+  const i = KEYS.indexOf(e.code); if (i >= 0) { setHeld(i, true); e.preventDefault(); }
+  if (e.code === 'Space' && phase !== 'lobby' && phase !== 'over') { held[0] = true; e.preventDefault(); }
+  if ((e.code === 'Enter' || e.code === 'Space') && phase === 'lobby') { e.preventDefault(); if (!humans.some(Boolean)) { humans[0] = true; } startMatch(); }
+  else if ((e.code === 'Enter' || e.code === 'Space') && phase === 'over') { e.preventDefault(); startMatch(); }
+});
+addEventListener('keyup', e => { const i = KEYS.indexOf(e.code); if (i >= 0) held[i] = false; if (e.code === 'Space') held[0] = false; });
+function quad(t) { const r = cv.getBoundingClientRect(); const hu = humans.map((h, i) => h ? i : -1).filter(i => i >= 0);
+  if (hu.length <= 1) return hu[0] ?? 0;
+  if (hu.length === 2) return t.clientX < r.width / 2 ? hu[0] : hu[1];
+  const q = (t.clientX < r.width / 2 ? 0 : 1) + (t.clientY < r.height / 2 ? 0 : 2); return hu[Math.min(q, hu.length - 1)]; }
+cv.addEventListener('pointerdown', e => { ctxA(); if (phase === 'lobby' || phase === 'over') return; touchMode = true; touchHeld.set(e.pointerId, quad(e)); for (const i of touchHeld.values()) held[i] = true; });
+const up = e => { if (!touchHeld.has(e.pointerId)) return; const i = touchHeld.get(e.pointerId); touchHeld.delete(e.pointerId); if (![...touchHeld.values()].includes(i)) held[i] = false; };
+cv.addEventListener('pointerup', up); cv.addEventListener('pointercancel', up);
+
+// ---------------- UI ----------------
+const show = id => { document.getElementById(id).classList.remove('hidden'); }, hideAll = () => document.querySelectorAll('.panel').forEach(p => p.classList.add('hidden'));
+function renderSlots() { document.getElementById('slots').innerHTML = [0, 1, 2, 3].map(i =>
+  `<div class="slot ${humans[i] ? 'on' : ''}" style="color:${COLORS[i]}"><b>${NAMES[i]}</b>${humans[i] ? 'READY' : 'press <kbd>' + KEYLBL[i] + '</kbd>'}</div>`).join(''); }
+renderSlots();
+document.getElementById('bSolo').onclick = () => { ctxA(); humans = [true, false, false, false]; renderSlots(); startMatch(); };
+document.getElementById('bParty').onclick = () => { ctxA(); if (!humans.some(Boolean)) humans = [true, true, false, false]; startMatch(); };
+document.getElementById('bAgain').onclick = () => { ctxA(); startMatch(); };
+document.getElementById('bMenu').onclick = () => { hideAll(); show('lobby'); phase = 'lobby'; };
+
+// ---------------- loop ----------------
+let last = performance.now();
+function frame(t) { const dt = Math.min(.05, (t - last) / 1000); last = t; now = t / 1000;
+  if (phase !== 'lobby' && phase !== 'over') { const n = Math.ceil(dt / (1 / 120)); for (let k = 0; k < n; k++) update(dt / n); } else stepFx(dt);
+  if (phase === 'lobby' && !demo) attract(dt);
+  draw(); requestAnimationFrame(frame); }
+// attract mode behind the lobby: 4 computer moths play quietly
+let attractOn = false;
+function attract(dt) { if (!attractOn) { attractOn = true; const h = humans; humans = [false, false, false, false]; moths = [0, 1, 2, 3].map(newMoth); humans = h; motes = []; for (let k = 0; k < 4; k++) spawnMote(); }
+  const p = phase; phase = 'play'; tPhase = 1; const savedWins = wins.slice(); quiet = true;
+  const n = Math.ceil(dt / (1 / 120)); for (let k = 0; k < n; k++) { for (const m of moths) m.bot = true; update(dt / n); if (phase !== 'play') break; }
+  wins = savedWins; if (phase !== 'play' || tRound > 30) { attractOn = false; tRound = 0; inset = 0; } phase = p; quiet = false; }
+
+// ---------------- selftest (#selftest): 200 headless bot rounds, deterministic ----------------
+if (selftest) {
+  seed = 7; humans = [false, false, false, false]; var tot = 0, causes = {}; let rounds = 0, bad = 0, longest = 0, wonBy = [0, 0, 0, 0, 0], eat = 0;
+  for (let r = 0; r < 200; r++) {
+    wins = [0, 0, 0, 0]; startRound(); phase = 'play'; let t = 0;
+    while (phase === 'play' && t < 120) { update(1 / 60); t += 1 / 60; }
+    rounds++; longest = Math.max(longest, t); tot = (typeof tot === "number" ? tot : 0) + t; window.tot = tot; if (phase === 'play' || moths.some(m => !isFinite(m.x) || !isFinite(m.y))) bad++;
+    const w = wins.indexOf(1); wonBy[w < 0 ? 4 : w]++; eat += moths.reduce((s, m) => s + m.eaten, 0); for (const m of moths) if (m.cause) { const k = m.cause + (m.dt < 1.5 ? '<1.5' : m.dt < 4 ? '<4' : '>4'); causes[k] = (causes[k] || 0) + 1; }
+  }
+  const res = `SELFTEST ${bad === 0 ? 'OK' : 'FAIL'} rounds=${rounds} stuck=${bad} longest=${longest.toFixed(1)}s wins=${wonBy.join('/')} motes/round=${(eat / rounds).toFixed(1)} avg=${(tot / rounds).toFixed(1)}s deaths=${JSON.stringify(causes)}`;
+  document.title = res; document.body.setAttribute('data-selftest', res); console.log(res);
+}
+// ---------------- demo (#demo / #demo-rec): one bot match for the gameplay video ----------------
+let demoN = 0;
+function demoNext() { demoN++; if (demoN >= 1) { if (window.__stopRec) window.__stopRec(); else document.title = 'DEMO DONE'; return; } }
+if (demo) {
+  hideAll(); seed = 11; humans = [false, false, false, false];
+  if (location.hash === '#demo-rec') {
+    ctxA(); const dst = ac.createMediaStreamDestination(); bus.connect(dst);
+    const rec = new MediaRecorder(dst.stream, { mimeType: 'audio/webm;codecs=opus' }), chunks = [];
+    rec.ondataavailable = e => chunks.push(e.data);
+    rec.onstop = async () => { const bl = new Blob(chunks, { type: 'audio/webm' }); const u8 = new Uint8Array(await bl.arrayBuffer());
+      let bin = ''; for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+      window.__audio = btoa(bin); document.title = 'DEMO DONE'; };
+    rec.start(); window.__audioStart = Date.now(); window.__stopRec = () => rec.stop();
+  }
+  startMatch();
+}
+if (!selftest) requestAnimationFrame(frame);
+</script>
+</body>
+</html>
