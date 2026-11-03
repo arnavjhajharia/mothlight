@@ -12,7 +12,9 @@
   html,body{margin:0;height:100%;background:#07061a;overflow:hidden;touch-action:none;user-select:none;-webkit-user-select:none;font-family:ui-rounded,"SF Pro Rounded",system-ui,sans-serif;color:#f5ecd6}
   canvas{position:absolute;left:0;top:0;width:100%;height:100%;display:block}
   #ui{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none}
-  .panel{pointer-events:auto;text-align:center;background:rgba(10,8,30,.72);border:1px solid rgba(255,220,150,.25);border-radius:22px;padding:26px 34px;max-width:min(760px,92vw);backdrop-filter:blur(6px)}
+  .panel{pointer-events:auto;text-align:center;background:rgba(10,8,30,.72);border:1px solid rgba(255,220,150,.25);border-radius:22px;padding:26px 34px;max-width:min(760px,92vw);box-sizing:border-box;backdrop-filter:blur(6px)}
+  @media (max-width:560px){.panel{padding:18px 12px;max-width:94vw}.slots{gap:6px}.slot{padding:8px 2px;font-size:12px}.slot b{font-size:16px}button{font-size:15px;padding:11px 16px}}
+  .wait button{opacity:.45;pointer-events:none}
   h1{margin:0 0 4px;font-size:clamp(40px,7vw,78px);letter-spacing:.06em;font-weight:800;background:linear-gradient(180deg,#fff3c8,#ffb347);-webkit-background-clip:text;background-clip:text;color:transparent;text-shadow:0 0 40px rgba(255,180,70,.35)}
   .sub{opacity:.85;margin:0 0 18px;font-size:clamp(14px,2vw,18px)}
   .slots{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:14px 0 18px}
@@ -188,6 +190,7 @@ function endMatch() {
   document.getElementById('overT').style.background = 'none'; document.getElementById('overT').style.color = COLORS[wi];
   document.getElementById('overS').textContent = (humans[wi] ? 'A human moth! ' : 'A computer moth. ') + 'Final: ' + wins.map((w, i) => NAMES[i] + ' ' + w).join(' · ');
   show('over'); sfx.fanfare();
+  const ov = document.getElementById('over'); ov.classList.add('wait'); setTimeout(() => ov.classList.remove('wait'), 900); // a thumb still holding its corner must not hit Menu
 }
 
 // ---------------- rendering ----------------
@@ -304,6 +307,7 @@ function sched() {
 
 // ---------------- input ----------------
 let touchMode = false;
+const COARSE = matchMedia('(pointer:coarse)').matches;
 function setHeld(i, v) { held[i] = v; if (phase === 'lobby' && v && !humans[i]) { humans[i] = joined[i] = true; renderSlots(); tone(ROOT[i] * 2, .2, 'triangle', .2); } }
 addEventListener('keydown', e => {
   ctxA(); if (e.repeat) return;
@@ -324,7 +328,7 @@ cv.addEventListener('pointerup', up); cv.addEventListener('pointercancel', up);
 // ---------------- UI ----------------
 const show = id => { document.getElementById(id).classList.remove('hidden'); }, hideAll = () => document.querySelectorAll('.panel').forEach(p => p.classList.add('hidden'));
 function renderSlots() { document.getElementById('slots').innerHTML = [0, 1, 2, 3].map(i =>
-  `<div class="slot ${humans[i] ? 'on' : ''}" style="color:${COLORS[i]}"><b>${NAMES[i]}</b>${humans[i] ? 'READY' : 'press <kbd>' + KEYLBL[i] + '</kbd>'}</div>`).join(''); }
+  `<div class="slot ${humans[i] ? 'on' : ''}" style="color:${COLORS[i]}"><b>${NAMES[i]}</b>${humans[i] ? 'READY' : (COARSE ? 'open seat' : 'press <kbd>' + KEYLBL[i] + '</kbd>')}</div>`).join(''); }
 renderSlots();
 document.getElementById('bSolo').onclick = () => { ctxA(); humans = [true, false, false, false]; renderSlots(); startMatch(); };
 document.getElementById('bParty').onclick = () => { ctxA(); if (!humans.some(Boolean)) humans = [true, true, false, false]; startMatch(); };
