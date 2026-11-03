@@ -273,21 +273,39 @@ function hintKeys() { cx.font = '600 20px ui-rounded,system-ui,sans-serif'; cx.t
 let ac = null, bus = null;
 const PENTA = [0, 2, 4, 7, 9, 12, 14, 16, 19, 21, 24];
 function ctxA() { if (ac) { if (ac.state === 'suspended') ac.resume(); return; } ac = new (window.AudioContext || window.webkitAudioContext)(); bus = ac.createGain(); bus.gain.value = .7;
-  const comp = ac.createDynamicsCompressor(); bus.connect(comp); comp.connect(ac.destination); startMusic(); }
-function tone(f, d, type = 'sine', g = .2, when = 0, slide = 0) { if (!ac) return; const t = ac.currentTime + when, o = ac.createOscillator(), e = ac.createGain();
-  o.type = type; o.frequency.setValueAtTime(f, t); if (slide) o.frequency.exponentialRampToValueAtTime(f * slide, t + d);
-  e.gain.setValueAtTime(0, t); e.gain.linearRampToValueAtTime(g, t + .008); e.gain.exponentialRampToValueAtTime(.0008, t + d); o.connect(e); e.connect(bus); o.start(t); o.stop(t + d + .05); }
-function noise(d, g, f = 1200, when = 0) { if (!ac) return; const t = ac.currentTime + when, n = ac.sampleRate * d, buf = ac.createBuffer(1, n, ac.sampleRate), da = buf.getChannelData(0);
-  for (let k = 0; k < n; k++) da[k] = Math.random() * 2 - 1; const s = ac.createBufferSource(); s.buffer = buf; const fl = ac.createBiquadFilter(); fl.type = 'bandpass'; fl.frequency.value = f;
-  const e = ac.createGain(); e.gain.setValueAtTime(g, t); e.gain.exponentialRampToValueAtTime(.0008, t + d); s.connect(fl); fl.connect(e); e.connect(bus); s.start(t); }
+  const comp = ac.createDynamicsCompressor(); bus.connect(comp); comp.connect(ac.destination); loadSamples(); startMusic(); }
+// every sound is a recorded CC0 sample (audio/: VSCO 2 Community Edition instruments, Kenney SFX); notes pick the nearest
+// sample and are pitched with playbackRate. [file suffix, measured MIDI pitch of the recording]
+const INST = {
+  harp: [['G3', 54.94], ['B3', 58.88], ['D4', 61.88], ['F4', 65.0], ['A4', 68.9], ['C5', 71.89], ['E5', 75.89], ['G5', 78.94], ['B5', 82.93], ['D6', 85.92], ['F6', 88.95]],
+  bass: [['E2', 39.86], ['A2', 45.03], ['Cs3', 49.04], ['E3', 52.02], ['Gs3', 55.94], ['B3', 58.86]],
+  vln: [['G3', 55.01], ['B3', 59.0], ['D4', 61.99], ['Fs4', 65.99], ['A4', 69.0], ['C5', 72.0], ['E5', 76.0], ['G5', 79.02], ['B5', 83.01], ['D6', 86.01]],
+  glock: [['G5', 79.08], ['C6', 84.12], ['G6', 91.12], ['C7', 96.15], ['G7', 103.16], ['C8', 108.24]],
+};
+const SMP = {}; let smpReady = null;
+function loadSamples() {
+  if (smpReady) return smpReady;
+  const names = ['kick', 'tamb', 'claves', 'flare', 'bump'];
+  for (const k in INST) for (const [n] of INST[k]) names.push(k + '_' + n);
+  smpReady = Promise.all(names.map(n => fetch('audio/' + n + '.mp3').then(r => r.arrayBuffer())
+    .then(b => new Promise((ok, no) => ac.decodeAudioData(b, ok, no))).then(buf => { SMP[n] = buf; }).catch(e => console.warn('sample', n, e))));
+  return smpReady;
+}
+function smp(name, d, g, when = 0, rate = 1) { const buf = SMP[name]; if (!ac || !buf) return; const t = ac.currentTime + when, s = ac.createBufferSource(), e = ac.createGain();
+  s.buffer = buf; s.playbackRate.value = rate; e.gain.setValueAtTime(0, t); e.gain.linearRampToValueAtTime(g, t + .008); e.gain.exponentialRampToValueAtTime(.0008, t + d);
+  s.connect(e); e.connect(bus); s.start(t); s.stop(t + d + .05); }
+const hzMidi = f => 69 + 12 * Math.log2(f / 440);
+function note(inst, f, d, g, when = 0) { const m = hzMidi(f); if (inst === 'harp' && m > 90) inst = 'glock';
+  let best = INST[inst][0]; for (const x of INST[inst]) if (Math.abs(x[1] - m) < Math.abs(best[1] - m)) best = x;
+  smp(inst + '_' + best[0], d, g, when, Math.pow(2, (m - best[1]) / 12)); }
 const ROOT = [220, 246.94, 196, 261.63];
 const sfx = {
-  eat(i, n) { const f = ROOT[i] * Math.pow(2, PENTA[Math.min(n, PENTA.length - 1)] / 12); tone(f, .22, 'triangle', .22); tone(f * 2, .12, 'sine', .08, .03); },
-  pop(i) { noise(.45, .5, 700); tone(ROOT[i], .5, 'sawtooth', .12, 0, .25); tone(55, .35, 'sine', .5, 0, .5); },
-  count() { [0, .7, 1.4].forEach(w => tone(523.25, .12, 'square', .07, w)); tone(1046.5, .3, 'square', .08, 2.15); },
+  eat(i, n) { const f = ROOT[i] * Math.pow(2, PENTA[Math.min(n, PENTA.length - 1)] / 12); note('harp', f, .4, .19); },
+  pop(i) { smp('flare', .5, .7); smp('bump', .2, .5); smp('kick', .35, .7, 0, .8); },
+  count() { [0, .7, 1.4].forEach(w => smp('claves', .15, .3, w)); note('glock', 1046.5, .5, .3, 2.15); },
   go() { },
-  win() { [0, 4, 7, 12].forEach((s, k) => tone(392 * Math.pow(2, s / 12), .5, 'triangle', .14, k * .09)); },
-  fanfare() { [0, 4, 7, 12, 16, 19, 24].forEach((s, k) => tone(261.63 * Math.pow(2, s / 12), .9, 'triangle', .13, k * .1)); },
+  win() { [0, 4, 7, 12].forEach((s, k) => note('harp', 392 * Math.pow(2, s / 12), .6, .25, k * .09)); },
+  fanfare() { [0, 4, 7, 12, 16, 19, 24].forEach((s, k) => note('harp', 261.63 * Math.pow(2, s / 12), 1.1, .24, k * .1)); },
 };
 // soft night groove; gets busier as the dark closes in
 let beat = 0, nextBeat = 0;
@@ -296,11 +314,11 @@ function sched() {
   const spb = 60 / 104 / 2;
   while (nextBeat < ac.currentTime + .15) {
     const w = nextBeat - ac.currentTime, step = beat % 16, intense = phase === 'play' ? Math.min(1, tRound / SHRINK_AT) : .2;
-    if (step % 4 === 0) tone(58, .3, 'sine', .32, w, .5);
-    if (intense > .5 && step % 2 === 1) noise(.05, .06 * intense, 7000, w);
+    if (step % 4 === 0) smp('kick', .3, .4, w);
+    if (intense > .5 && step % 2 === 1) smp('tamb', .1, .09 * intense, w);
     const bassline = [0, 0, 7, 0, 3, 3, 10, 7];
-    if (step % 2 === 0) tone(55 * Math.pow(2, bassline[(step / 2) | 0] / 12), .26, 'triangle', .1, w);
-    if (step === 0 || step === 6 || step === 12) tone(440 * Math.pow(2, [0, 3, 7, 10][(beat >> 4) % 4] / 12), .9, 'sine', .035 + .03 * intense, w);
+    if (step % 2 === 0) note('bass', 110 * Math.pow(2, bassline[(step / 2) | 0] / 12), .26, .3, w);
+    if (step === 0 || step === 6 || step === 12) note('vln', 440 * Math.pow(2, [0, 3, 7, 10][(beat >> 4) % 4] / 12), .9, .12 + .1 * intense, w);
     beat++; nextBeat += spb;
   }
 }
@@ -308,7 +326,7 @@ function sched() {
 // ---------------- input ----------------
 let touchMode = false;
 const COARSE = matchMedia('(pointer:coarse)').matches;
-function setHeld(i, v) { held[i] = v; if (phase === 'lobby' && v && !humans[i]) { humans[i] = joined[i] = true; renderSlots(); tone(ROOT[i] * 2, .2, 'triangle', .2); } }
+function setHeld(i, v) { held[i] = v; if (phase === 'lobby' && v && !humans[i]) { humans[i] = joined[i] = true; renderSlots(); note('harp', ROOT[i] * 2, .35, .28); } }
 addEventListener('keydown', e => {
   ctxA(); if (e.repeat) return;
   const i = KEYS.indexOf(e.code); if (i >= 0) { setHeld(i, true); e.preventDefault(); }
