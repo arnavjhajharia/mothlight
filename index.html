@@ -269,7 +269,7 @@ function hintKeys() { cx.font = '600 20px ui-rounded,system-ui,sans-serif'; cx.t
 // ---------------- audio ----------------
 let ac = null, bus = null;
 const PENTA = [0, 2, 4, 7, 9, 12, 14, 16, 19, 21, 24];
-function ctxA() { if (ac) return; ac = new (window.AudioContext || window.webkitAudioContext)(); bus = ac.createGain(); bus.gain.value = .7;
+function ctxA() { if (ac) { if (ac.state === 'suspended') ac.resume(); return; } ac = new (window.AudioContext || window.webkitAudioContext)(); bus = ac.createGain(); bus.gain.value = .7;
   const comp = ac.createDynamicsCompressor(); bus.connect(comp); comp.connect(ac.destination); startMusic(); }
 function tone(f, d, type = 'sine', g = .2, when = 0, slide = 0) { if (!ac) return; const t = ac.currentTime + when, o = ac.createOscillator(), e = ac.createGain();
   o.type = type; o.frequency.setValueAtTime(f, t); if (slide) o.frequency.exponentialRampToValueAtTime(f * slide, t + d);
