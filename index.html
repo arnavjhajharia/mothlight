@@ -283,11 +283,14 @@ const INST = {
   glock: [['G5', 79.08], ['C6', 84.12], ['G6', 91.12], ['C7', 96.15], ['G7', 103.16], ['C8', 108.24]],
 };
 const SMP = {}; let smpReady = null;
+const SMP_NAMES = ['kick', 'tamb', 'claves', 'flare', 'bump'];
+for (const k in INST) for (const [n] of INST[k]) SMP_NAMES.push(k + '_' + n);
+// prefetch the bytes at page load (no AudioContext needed) so the first tap only decodes (strategist s31)
+const SMP_RAW = Object.fromEntries(SMP_NAMES.map(n => { const p = fetch('audio/' + n + '.mp3').then(r => r.arrayBuffer()); p.catch(() => {}); return [n, p]; }));
 function loadSamples() {
   if (smpReady) return smpReady;
-  const names = ['kick', 'tamb', 'claves', 'flare', 'bump'];
-  for (const k in INST) for (const [n] of INST[k]) names.push(k + '_' + n);
-  smpReady = Promise.all(names.map(n => fetch('audio/' + n + '.mp3').then(r => r.arrayBuffer())
+  const names = SMP_NAMES;
+  smpReady = Promise.all(names.map(n => SMP_RAW[n]
     .then(b => new Promise((ok, no) => ac.decodeAudioData(b, ok, no))).then(buf => { SMP[n] = buf; }).catch(e => console.warn('sample', n, e))));
   return smpReady;
 }
